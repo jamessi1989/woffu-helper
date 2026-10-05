@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Woffu autosign every 5 minutes on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 07..17:00/5
+OnStartupSec=2min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Woffu auto clock-in/out
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust the path to where you cloned the repo, and the times to your schedule.
+ExecStart=/usr/bin/python3 %h/woffu-helper/autosign.py --start 07:00 --lunch 13:00-13:30 --end 16:30
