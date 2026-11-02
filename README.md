@@ -1,13 +1,34 @@
-# woffu-helper
+# Woffu Helper — time record automation and MCP server
 
-Configurable command-line tools for [Woffu](https://www.woffu.com):
+[![Tests](https://github.com/jamessi1989/woffu-helper/actions/workflows/tests.yml/badge.svg)](https://github.com/jamessi1989/woffu-helper/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-38b99a)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9%2B%20CLI%20%7C%203.10%2B%20MCP-3776ab)](pyproject.toml)
 
-- **`woffu-autosign`** signs in and out on a schedule, takes lunch breaks, and optionally recovers missing days or clock-outs.
-- **`woffu-backfill`** previews and fills empty past workdays or closes unfinished days.
+**Fill missing Woffu workdays, fix forgotten clock-outs, and clock in and out on a schedule—from a terminal or a compatible AI assistant.**
 
-Python 3.9+ is required. These tools use the Woffu web app's internal API, which can change without notice. Record only hours you actually worked and follow your employer's time-recording policy.
+Woffu Helper is an open-source Python CLI and local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for [Woffu](https://www.woffu.com/). It previews repairs, preserves existing clock-in/out records, and supports configurable work hours, lunch breaks, weekday schedules, and next-day recovery. Each person runs their own copy with their own Woffu account.
 
-## Install
+![Woffu Helper: scheduled signing, missing-day recovery, and tools for AI assistants. Example day: 09:00–13:00 and 13:30–17:30, eight worked hours and a 30-minute lunch.](docs/assets/hero.svg)
+
+[Quick start](#quick-start) · [MCP setup](docs/MCP.md) · [CLI and scheduling guide](docs/USAGE.md) · [Español](README.es.md) · [Changelog](CHANGELOG.md)
+
+## Choose how to use it
+
+| You want to… | Use | What it does |
+|---|---|---|
+| Fill empty past workdays | `woffu-backfill fill` | Preview a schedule and submit it to eligible empty days. |
+| Fix a forgotten clock-out | `woffu-backfill close` | Preserve recorded signs and add the missing final clock-out. |
+| Clock in/out automatically | `woffu-autosign` + your scheduler | Follow your workweek, lunch and worked-hour target. |
+| Recover after a missed run | Autosign recovery | Fill the most recent eligible empty workday and/or close unfinished days. |
+| Ask an AI assistant to manage records | `woffu-mcp` | Inspect records, preview a repair, and optionally apply that exact preview. |
+
+The tools use Woffu's internal web API. This is an independent community project, unaffiliated with Woffu; API changes can require updates. Use schedules that reflect work actually performed and your employer's recording policy.
+
+## Quick start
+
+### 1. Install
+
+Python **3.9+** for the CLI; **3.10+** for MCP. These commands are for Linux/macOS; Windows uses `.venv\Scripts\python.exe` and `.venv\Scripts\Activate.ps1`.
 
 ```bash
 git clone https://github.com/jamessi1989/woffu-helper.git ~/woffu-helper
@@ -17,169 +38,136 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-This installs `woffu-autosign` and `woffu-backfill`. On Windows, use the virtual environment's `Scripts` directory instead of `bin`.
-
-The original commands still work from the checkout after `python3 -m pip install -r requirements.txt`:
+For AI assistant tools, install the optional extra instead:
 
 ```bash
-python3 autosign.py --help
-python3 backfill.py --help
+.venv/bin/python -m pip install '.[mcp]'
 ```
 
-To upgrade an installed copy after pulling changes, run `.venv/bin/python -m pip install .` again. A service running `python3 /path/to/autosign.py` reads the checkout directly.
+### 2. Connect your Woffu account
 
-## Credentials
-
-1. Open your company's Woffu web app and sign in.
-2. In browser DevTools, open **Network**, reload, and copy the JWT from a request's `authorization` header.
-3. Save the host and token locally:
+Sign in to your company's Woffu web app. In browser DevTools → **Network**, reload and copy the JWT from a request's `authorization` header. Keep it in your local credential file:
 
 ```bash
 mkdir -p ~/.config/woffu
-cp env.example ~/.config/woffu/env
+cp -n env.example ~/.config/woffu/env
 chmod 600 ~/.config/woffu/env
 $EDITOR ~/.config/woffu/env
 ```
 
-`WOFFU_DOMAIN` accepts `yourcompany.woffu.com` or `https://yourcompany.woffu.com/`. `WOFFU_TOKEN` accepts the JWT with or without the `Bearer ` prefix. Expired tokens need renewing from the web app.
+```dotenv
+WOFFU_DOMAIN=yourcompany.woffu.com
+WOFFU_TOKEN=your_token_here
+```
 
-Both commands accept `--env-file /path/to/credentials`; `WOFFU_ENV_FILE` also selects a credential file. Explicit `WOFFU_DOMAIN` and `WOFFU_TOKEN` environment variables override file values. Credential files are read without changing the process environment, so separate accounts stay separate. **Never commit real credentials.**
+Never put the token in a chat, issue, screenshot or commit. Tokens expire and need renewal from Woffu. See [credential options and separate accounts](docs/USAGE.md#credentials).
 
-## Configure automatic signing
+### 3. Preview a repair
 
-For a new setup, copy and edit the example:
+Choose dates and hours that match your actual work. These examples make **no changes**:
 
 ```bash
-cp config.example.json ~/.config/woffu/config.json
+# Fill eligible empty workdays with eight worked hours and a 30-minute lunch.
+woffu-backfill fill --from 2026-10-26 --to 2026-10-30 \
+  --slots 09:00-13:00,13:30-17:30 --variance 0 --dry-run
+
+# Add a missing final clock-out to reach eight worked hours.
+woffu-backfill close --from 2026-10-26 --to 2026-10-30 \
+  --hours 8 --variance 0 --dry-run
+```
+
+Remove `--dry-run` to submit; the CLI asks for confirmation. `--yes` supports unattended runs. `--variance 0` keeps generated times fixed between preview and execution. Filling skips days with existing entries; closing preserves the existing signs. Both skip protected days. Past edits may require company approval.
+
+## Use Woffu with an AI assistant
+
+The optional MCP server runs as a **local process**, usually started by your AI app. It needs no public URL, cloud hosting, or shared account. It exposes five inspection/preview tools; adding `--allow-writes` exposes a sixth tool for applying a preview.
+
+After installing `.[mcp]`, create a schedule for a **new installation**:
+
+```bash
+cp -n config.example.json ~/.config/woffu/config.json
 $EDITOR ~/.config/woffu/config.json
 woffu-autosign --show-config
-woffu-autosign --dry-run
 ```
 
-The example uses a 09:00 start, 13:00–13:30 lunch, eight worked hours, no extra time or random variance, and recovery switched off. Choose the schedule and recovery policy you want before enabling the timer.
+The example uses 09:00–13:00 / 13:30–17:30, zero extra time or variance, and automatic recovery off. Existing configuration files are kept.
 
-Settings are read from `~/.config/woffu/config.json`, or from `--config PATH` / `WOFFU_CONFIG`. CLI options override the file, including weekday overrides. Relative `env_file` and `pause_dir` paths in JSON resolve beside the config file. `--show-config` prints the effective settings without loading credentials or accessing Woffu.
-
-**Existing installations:** without a config file or new flags, the existing behavior is preserved: 07:00 earliest start, lunch around 13:00 with a 30-minute minimum, a 16:30 starting/resuming cutoff, eight worked hours plus 5–15 extra minutes, Monday–Friday, and both recovery modes over seven days. Existing flags, including `--close-hours`, remain supported.
-
-| JSON setting / CLI option | Purpose | Default without a config |
-|---|---|---|
-| `start` / `--start` | Earliest clock-in, local `HH:MM`. | `07:00` |
-| `lunch` / `--lunch` | `HH:MM-HH:MM`, or `none`. | `13:00-13:30` |
-| `end` / `--end` | Latest starting/resuming cutoff; clock-out follows worked hours. | `16:30` |
-| `work_hours` / `--work-hours` | Daily work target excluding breaks. `--close-hours` is an alias. | `8` |
-| `extra_minutes` / `--extra-minutes` | Extra worked minutes; `0` disables. | `10` |
-| `extra_variance` / `--extra-variance` | Random ± minutes around extra time, with a minimum of 1 when enabled. | `5` |
-| `min_lunch_minutes` / `--min-lunch-minutes` | Minimum elapsed lunch, including delayed timer runs. | `30` |
-| `lunch_variance` / `--lunch-variance` | Random 0..N minute delay for each lunch boundary. | `6` |
-| `end_early_minutes` / `--end-early-minutes` | Maximum earlier cutoff. | `5` |
-| `end_late_minutes` / `--end-late-minutes` | Maximum later cutoff. | `10` |
-| `weekdays` / `--weekdays` | JSON list or comma-separated `mon,tue,...`. | Monday–Friday |
-| `recovery` / `--recovery` | `off`, `close`, `fill`, or `both`. | `both` |
-| `recovery_days` / `--recovery-days` | Past calendar days to inspect, 1–366. | `7` |
-| `pause_dir` / `--pause-dir` | Directory for dated pause files and `pause-all`. | `~/.config/woffu` |
-| `env_file` / `--env-file` | Credential file override. | `~/.config/woffu/env` |
-| `request_timeout` / `--request-timeout` | HTTP timeout in seconds. | `20` |
-
-Times use the computer's local timezone. Schedules must fit within one calendar day; overnight shifts are not supported. The selected weekdays must also be working days in Woffu's company calendar. Set variances to `0` for fixed timing; otherwise random choices are repeatable for each date.
-
-### Different hours by weekday
-
-Add `weekday_overrides` to the JSON file. Overrides support schedule fields, including start, lunch, work hours, extra time, and variance:
-
-```json
-{
-  "work_hours": 8,
-  "extra_minutes": 0,
-  "weekday_overrides": {
-    "fri": {"work_hours": 7, "lunch": "none"}
-  }
-}
-```
-
-Recovery uses the affected date's weekday settings. A CLI override such as `--work-hours 8` takes precedence on every day.
-
-### Signing and recovery behavior
-
-Each run reads today's actual entries and makes at most one live sign. Clock-out is due when the daily worked-time target is reached, excluding recorded breaks. Returning from lunch waits for both the scheduled return and the minimum break since the actual clock-out. Timer intervals can add a few minutes to the target.
-
-Recovery runs before today's signing:
-
-- `fill`: fill only the most recent eligible workday if it has no entries, using that day's configured start, lunch, and work target.
-- `close`: inspect actual entries throughout the lookback window and add a final missing clock-out. This catches an open afternoon even when the daily summary still shows the lunch clock-out.
-- `both`: perform both actions. `off`: make no historical recovery requests.
-
-Completed days and existing signs stay unchanged. Recovery skips holidays, absences (approved or pending), paused dates, accepted or locked days, and pending edits. Ambiguous slot layouts are left alone. Network failures are logged and retried on later runs without blocking today's signing. Past changes may need approval under your company's settings.
-
-Pause a date you did not work, keeping the file through the recovery window:
+For Codex CLI, register the local command:
 
 ```bash
-touch ~/.config/woffu/pause-2026-11-03
+codex mcp add woffu -- "$HOME/woffu-helper/.venv/bin/woffu-mcp" \
+  --config "$HOME/.config/woffu/config.json" --allow-writes
 ```
 
-A pause for today still allows recovery of earlier dates. `pause-all` in the same directory stops everything. Use the configured `pause_dir` when running separate accounts.
+Then ask, for example:
 
-Live signing needs the computer online and the job running. Recovery can repair the supported gaps when it comes back online; it does not infer missing lunch or afternoon entries in otherwise closed days.
+> Check last week in Woffu for missing workdays or clock-outs. Show me the proposed times before submitting anything.
 
-## Run automatically
+> I worked 09:00–13:00 and 13:30–17:30 on 30 October 2026. Preview filling that day if it is empty.
 
-### systemd user timer (Linux)
+> Apply the Woffu repair you just showed me.
 
-The supplied service uses the virtual environment created above. Edit its executable path if you cloned elsewhere. The timer runs every five minutes, Monday–Friday, 07:00–20:55; **adjust its days and hours to cover your configured workweek and possible finish times**.
+The [MCP guide](docs/MCP.md) includes the tool reference, generic client JSON, ChatGPT desktop setup, and troubleshooting. Codex supports local stdio servers; ChatGPT web requires a separate supported integration and does not read your local Codex configuration. This repo ships a local MCP server. See [OpenAI's MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
+
+## Run Woffu automatically
+
+Configure your schedule, preview it with `woffu-autosign --dry-run`, and use the supplied [systemd timer](docs/USAGE.md#systemd-user-timer-linux) or [cron example](docs/USAGE.md#cron-linux--macos). The computer must be running and online for live signing.
+
+- **Lunch:** at least 30 minutes by default, including when a timer runs late. Longer breaks are supported.
+- **Work target:** configured worked hours, excluding breaks, plus optional extra minutes.
+- **Recovery:** `off`, `fill`, `close`, or `both`, with a configurable lookback.
+- **Weekdays:** choose working days and override hours or lunch for particular weekdays.
+- **Pauses:** skip specific dates or pause the whole automation.
+
+For existing users, the no-config defaults and original `python3 autosign.py` / `python3 backfill.py` commands are preserved. Installing MCP does not enable or alter a timer. The [full configuration reference](docs/USAGE.md#configure-automatic-signing) explains the legacy defaults and every option.
+
+## Frequently asked questions
+
+### Can this fill missing Woffu time records?
+
+Yes. The CLI can backfill eligible empty past workdays over a date range. MCP can preview and fill an individual empty day. Automatic recovery fills only the most recent eligible empty workday, using its configured schedule.
+
+### Can it fix a missing afternoon clock-out?
+
+Yes. It inspects the actual work slots, so an open afternoon is detected even when the daily summary still shows the lunch clock-out. It keeps existing signs and adds only the final missing clock-out. It does not reconstruct missing lunch entries or alter an already completed day.
+
+### Are lunch breaks exactly 30 minutes?
+
+No. Thirty minutes is the default minimum. Scheduled breaks can be longer, timer delays can extend them, and existing recorded breaks are preserved when closing a day. The minimum is configurable for other schedules.
+
+### What does the Woffu MCP server let an AI do?
+
+Read today's entries and configured schedule, inspect missing days, preview a fill or clock-out, and apply a stored preview when write tools are enabled. It cannot toggle live clock-in/out, approve records, delete days, or manage other employees. See [all six tools](docs/MCP.md#tool-reference).
+
+### Does this work directly in ChatGPT web?
+
+This release provides a local stdio integration for clients that can launch MCP programs, including the documented Codex/desktop setup. It does not publish a hosted ChatGPT plugin or remote HTTP endpoint. Finding the repository in search does not automatically connect a Woffu account.
+
+### Which days are protected?
+
+Repairs skip weekends/non-workdays, holidays, approved or pending absences, accepted or locked records, and pending edits. Automatic recovery and MCP also honor configured weekdays and pause files. Missing or ambiguous records are left for review. Woffu may still require approval after a change is submitted.
+
+### Can I use multiple accounts or a different timezone?
+
+Use a separate credential/config file and MCP process or scheduled command for each account. Times use the computer's local timezone; run it in the timezone of the work schedule. Overnight shifts are not supported.
+
+### How do I update it?
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/woffu-autosign.* ~/.config/systemd/user/
-$EDITOR ~/.config/systemd/user/woffu-autosign.service
-$EDITOR ~/.config/systemd/user/woffu-autosign.timer
-systemctl --user daemon-reload
-systemctl --user enable --now woffu-autosign.timer
-
-systemctl --user list-timers woffu-autosign.timer
-journalctl --user -u woffu-autosign -f
-systemctl --user disable --now woffu-autosign.timer  # stop
+cd ~/woffu-helper
+git pull --ff-only
+.venv/bin/python -m pip install .        # CLI
+# Or: .venv/bin/python -m pip install '.[mcp]'
 ```
 
-### cron (Linux / macOS)
+Restart the MCP connection after updating. Review the [changelog](CHANGELOG.md) for changes. Install from this repository; no PyPI publication is implied by the package name.
 
-Use an absolute executable path and a range covering your schedule:
+## Documentation and development
 
-```cron
-*/5 7-20 * * 1-5 /home/YOUR_USER/woffu-helper/.venv/bin/woffu-autosign >> /home/YOUR_USER/.cache/woffu-autosign.log 2>&1
-```
+- [CLI, configuration, recovery and scheduling](docs/USAGE.md)
+- [MCP installation, client setup and tool reference](docs/MCP.md)
+- [AI assistant integration notes](docs/AI-ASSISTANTS.md) · [documentation index](llms.txt)
+- [Guía en español: completar fichajes en Woffu](README.es.md)
+- [Contributing and tests](CONTRIBUTING.md) · [security reporting](SECURITY.md)
 
-Create the log directory first. Other schedulers, including Windows Task Scheduler, can invoke `woffu-autosign` every few minutes. Missed live timer runs are handled by the configured recovery policy.
-
-## Backfill past days manually
-
-Backfill has its own explicit CLI schedule; it does not load the autosign JSON file. Preview first:
-
-```bash
-# Empty workdays with the default 08:00–13:00 / 13:30–17:00 schedule
-woffu-backfill fill --from 2026-01-01 --dry-run
-
-# A single work period with weighted start times and no lunch
-woffu-backfill fill --from 2026-07-01 --to 2026-09-30   --slots 07:00-15:00 --starts 07:00:45,08:00:40,08:30:15 --dry-run
-
-# Past days missing a final clock-out
-woffu-backfill close --from 2026-10-01 --hours 8 --dry-run
-```
-
-Remove `--dry-run` to write; confirmation is required unless you pass `--yes`. `--limit N` limits the number of days. `--skip DATE ...` excludes dates. `--variance N` adds ±N minutes to generated boundaries (default 10); `fill --min-lunch-minutes N` sets the minimum gap between work slots (default 30).
-
-Filling skips days with existing entries, weekends, holidays, and approved/pending absences. Closing preserves recorded signs and adds only the missing final clock-out. The default end date is yesterday. Manual backfill plans re-roll their random times between preview and write; automatic recovery uses repeatable daily targets.
-
-## Development
-
-```bash
-python3 -m pip install -r requirements.txt
-python3 -m unittest discover -v
-```
-
-Tests use mocked APIs and require no Woffu credentials. CI runs the suite and installed CLI smoke checks on Python 3.9 and 3.13.
-
-The client uses diary summaries at `/api/svc/core/diariesquery/users/{userId}/diaries/summary/presence`, reads slots by `diarySummaryId`, and writes slots by user and date. Sign times are local `HH:mm:ss` values. Existing signs retain `signStatus: 0`; new signs use `signStatus: 1` and `signType: 3`. Live signing uses the web app's toggle endpoint.
-
-## License
-
-MIT
+Tests use mocked Woffu APIs, including MCP protocol and stdio checks, without requiring an account. Licensed under [MIT](LICENSE).

@@ -1,0 +1,5 @@
+include README.es.md CHANGELOG.md CONTRIBUTING.md SECURITY.md
+include config.example.json env.example requirements.txt llms.txt
+include test_*.py
+recursive-include docs *.md *.svg
+recursive-include systemd *.service *.timer

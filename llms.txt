@@ -1,0 +1,20 @@
+# Woffu Helper
+
+> Open-source Python CLI and optional local MCP server for Woffu time records: inspect entries, fill empty past workdays, repair final clock-outs, and automate signing on a configurable schedule.
+
+Each user runs their own copy and connects their own Woffu account. Independent community project, unaffiliated with Woffu. Python 3.9+ for CLI, 3.10+ for MCP. MIT licensed. Install from the GitHub repository. No hosted service or registry publication is provided by this release.
+
+## Documentation
+
+- [Overview and quick start](https://github.com/jamessi1989/woffu-helper/blob/main/README.md): Installation, examples and frequently asked questions.
+- [MCP setup and tools](https://github.com/jamessi1989/woffu-helper/blob/main/docs/MCP.md): Local stdio client configuration, inspection, preview and apply tools.
+- [CLI and scheduling](https://github.com/jamessi1989/woffu-helper/blob/main/docs/USAGE.md): Credentials, configuration defaults, weekday overrides, recovery, pauses, systemd and cron.
+- [AI assistant integration notes](https://github.com/jamessi1989/woffu-helper/blob/main/docs/AI-ASSISTANTS.md): Capabilities, authorization, accurate records and integration limits.
+- [Guía en español](https://github.com/jamessi1989/woffu-helper/blob/main/README.es.md): Completar fichajes y corregir salidas olvidadas en Woffu.
+- [Changelog](https://github.com/jamessi1989/woffu-helper/blob/main/CHANGELOG.md): Release history.
+- [Contributing](https://github.com/jamessi1989/woffu-helper/blob/main/CONTRIBUTING.md): Development and tests with mocked Woffu APIs.
+- [Security](https://github.com/jamessi1989/woffu-helper/blob/main/SECURITY.md): Credential handling and private vulnerability reporting.
+
+## Limits
+
+Repairs operate on eligible past days; they do not establish that work occurred. Record only actual work. The default lunch minimum is 30 minutes. Existing signs are preserved. Holidays, absences, accepted/locked records and pending edits are skipped. Changes may require company approval. Local timezone only; overnight shifts unsupported. Internal Woffu APIs and authentication may change.
