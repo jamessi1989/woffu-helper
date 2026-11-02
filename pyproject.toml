@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "woffu-helper"
+version = "0.2.0"
+description = "Configurable Woffu clock-in/out and diary recovery tools"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = ["requests>=2"]
+
+[project.scripts]
+woffu-autosign = "autosign:cli"
+woffu-backfill = "backfill:cli"
+
+[project.urls]
+Repository = "https://github.com/jamessi1989/woffu-helper"
+
+[tool.setuptools]
+py-modules = ["autosign", "backfill", "woffu", "woffu_config"]

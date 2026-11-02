@@ -1,0 +1,17 @@
+{
+  "start": "09:00",
+  "lunch": "13:00-13:30",
+  "end": "17:30",
+  "work_hours": 8,
+  "extra_minutes": 0,
+  "extra_variance": 0,
+  "min_lunch_minutes": 30,
+  "lunch_variance": 0,
+  "end_early_minutes": 0,
+  "end_late_minutes": 0,
+  "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+  "recovery": "off",
+  "recovery_days": 7,
+  "request_timeout": 20,
+  "weekday_overrides": {}
+}

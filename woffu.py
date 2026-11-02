@@ -12,10 +12,13 @@ import random
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
 ENV_FILE = Path.home() / ".config" / "woffu" / "env"
+MIN_LUNCH_MINUTES = 30
+REQUEST_TIMEOUT = 20
 
 # Sign enums used by the web app.
 UNCHANGED, CHANGED = 0, 1
@@ -47,10 +50,19 @@ def has_absence(diary):
     return bool(diary.get("absenceEvents") or diary.get("pendingAbsenceEvents"))
 
 
+def is_editable(diary):
+    """Past workday with no leave, approval, lock, or pending edit."""
+    return not (diary.get("isToday") or diary["isWeekend"] or diary["isHoliday"]
+                or has_absence(diary) or diary.get("accepted")
+                or diary.get("isUserEditable") is False
+                or diary.get("hasPendingDiaryChangeUser")
+                or diary.get("hasPendingDiaryChangeTargetUser")
+                or diary.get("diaryChangeRequestId"))
+
+
 def needs_filling(diary):
     """Workday with nothing recorded."""
-    return not (diary["isWeekend"] or diary["isHoliday"] or diary.get("accepted")
-                or has_absence(diary) or _has_real_in(diary))
+    return is_editable(diary) and not _has_real_in(diary)
 
 
 def is_open(diary):
@@ -71,16 +83,8 @@ def new_sign(hhmmss, sign_in):
 
 
 def existing_sign(api_sign):
-    """Echo a sign from GET .../workday/slots back unchanged."""
-    return {
-        "new": False, "deleted": False,
-        "agreementEventId": api_sign["AgreementEventId"],
-        "code": api_sign["Code"], "iP": api_sign["IP"],
-        "requestId": api_sign["RequestId"], "signId": api_sign["SignId"],
-        "signStatus": UNCHANGED, "signType": api_sign["SignType"],
-        "time": api_sign["Time"], "deviceId": api_sign["DeviceId"],
-        "signIn": api_sign["SignIn"], "userId": api_sign["UserId"],
-    }
+    """Keep an existing sign's identity, timestamps and metadata."""
+    return {**api_sign, "new": False, "signStatus": UNCHANGED}
 
 
 def make_slot(in_sign, out_sign, order):
@@ -89,30 +93,80 @@ def make_slot(in_sign, out_sign, order):
             "in": in_sign, "out": out_sign, "order": order, "totalMin": total}
 
 
+def plan_close_slots(api_slots, hours, variance, rnd=None):
+    """Close only the final open slot, preserving all recorded signs."""
+    if (not api_slots or api_slots[-1].get("out")
+            or any(not s.get("in") for s in api_slots)
+            or any(not s.get("out") for s in api_slots[:-1])):
+        return None
+    rnd = rnd or random
+    slots, worked = [], timedelta()
+    for i, s in enumerate(api_slots, 1):
+        in_sign = existing_sign(s["in"])
+        start = datetime.fromisoformat(f"2000-01-01T{in_sign['time']}")
+        out_sign = existing_sign(s["out"]) if s.get("out") else None
+        if out_sign:
+            worked += datetime.fromisoformat(f"2000-01-01T{out_sign['time']}") - start
+        else:
+            remaining = max(timedelta(minutes=round(hours * 60)) - worked, timedelta(minutes=30))
+            finish = start + remaining + timedelta(minutes=rnd.randint(-variance, variance))
+            if finish <= start or finish.date() != start.date():
+                return None
+            out_sign = new_sign(finish.strftime("%H:%M:%S"), False)
+        slot = make_slot(in_sign, out_sign, i)
+        slot["motive"] = s.get("motive")
+        slots.append(slot)
+    return slots
+
+
 # --- client -----------------------------------------------------------------
 
-def _load_env_file():
-    if not ENV_FILE.exists():
-        return
-    for line in ENV_FILE.read_text().splitlines():
-        key, sep, value = line.strip().partition("=")
+def _load_env_file(env_file=None):
+    explicit = env_file or os.environ.get("WOFFU_ENV_FILE")
+    path = Path(explicit).expanduser() if explicit else ENV_FILE
+    if not explicit and not path.exists():
+        return {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        raise SystemExit(f"Cannot read credential file {path}: {exc.strerror}") from None
+    values = {}
+    for line in lines:
+        key, sep, value = line.strip().removeprefix("export ").partition("=")
         if sep and not key.startswith("#"):
-            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+            values[key.strip()] = value.strip().strip("\"'")
+    return values
 
 
 class Woffu:
-    def __init__(self):
-        _load_env_file()
-        domain = os.environ.get("WOFFU_DOMAIN")
-        token = os.environ.get("WOFFU_TOKEN", "").removeprefix("Bearer ").strip()
+    def __init__(self, env_file=None, request_timeout=REQUEST_TIMEOUT):
+        values = _load_env_file(env_file)
+        domain = os.environ.get("WOFFU_DOMAIN", values.get("WOFFU_DOMAIN", "")).strip()
+        token = os.environ.get("WOFFU_TOKEN", values.get("WOFFU_TOKEN", "")).strip().removeprefix("Bearer ").strip()
         if not domain or not token:
             raise SystemExit("Set WOFFU_DOMAIN and WOFFU_TOKEN (see README).")
-        payload = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-        if claims.get("exp", 0) < time.time():
+        try:
+            origin = urlsplit(domain if "://" in domain else f"https://{domain}")
+            if (origin.scheme != "https" or not origin.hostname or origin.username or origin.password
+                    or origin.path not in ("", "/") or origin.query or origin.fragment
+                    or any(c.isspace() for c in origin.netloc)):
+                raise ValueError
+            origin.port  # Validate a supplied port before constructing requests.
+        except ValueError:
+            raise SystemExit("WOFFU_DOMAIN must be a hostname or an HTTPS origin, e.g. acme.woffu.com") from None
+        try:
+            _, payload, _ = token.split(".")
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+            expires = float(claims["exp"])
+            self.user_id = int(claims["UserId"])
+            if self.user_id <= 0 or not 0 < expires < float("inf"):
+                raise ValueError
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            raise SystemExit("WOFFU_TOKEN is not a valid Woffu JWT; copy the authorization token again.") from None
+        if expires < time.time():
             raise SystemExit("WOFFU_TOKEN has expired; copy a fresh one.")
-        self.user_id = int(claims["UserId"])
-        self.base = f"https://{domain}"
+        self.base = f"https://{origin.netloc}"
+        self.request_timeout = request_timeout
         self.headers = {
             "accept": "application/json, text/plain, */*",
             "authorization": f"Bearer {token}",
@@ -122,7 +176,8 @@ class Woffu:
         }
 
     def _get(self, path, **params):
-        resp = requests.get(self.base + path, headers=self.headers, params=params)
+        resp = requests.get(self.base + path, headers=self.headers, params=params,
+                            timeout=self.request_timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -146,35 +201,25 @@ class Woffu:
             start = chunk_end + timedelta(days=1)
         return out
 
-    def diary_slots(self, diary_id):
-        return self._get(f"/api/diaries/{diary_id}/workday/slots")["Slots"]
+    def diary_slots(self, diary_summary_id):
+        return self._get("/api/svc/core/diariesquery/diarysummaries/"
+                         f"{diary_summary_id}/workday/slots/self")["slots"]
 
-    def put_slots(self, diary_id, date, slots):
+    def put_slots(self, day, slots, comments=""):
         """Replace a day's slots. Edits to past days may need approval."""
-        body = {"userId": self.user_id, "comments": "", "date": date,
-                "slots": slots, "diaryId": diary_id}
-        resp = requests.put(f"{self.base}/api/diaries/{diary_id}/workday/slots/self",
-                            headers=self.headers, json=body)
+        # This API accepts local TimeOnly values (HH:mm:ss), not UTC datetimes.
+        body = {"userId": self.user_id, "comments": comments, "date": day,
+                "slots": slots}
+        resp = requests.put(f"{self.base}/api/svc/core/users/{self.user_id}"
+                            "/diarysummaries/workday/slots/self",
+                            headers=self.headers, json=body, timeout=self.request_timeout)
+        resp.raise_for_status()
         return resp.status_code
 
-    def plan_close(self, diary_id, hours, variance):
+    def plan_close(self, diary_summary_id, hours, variance):
         """Slots that keep every existing sign and clock out the open one so
         the day totals ~`hours`. None if the day isn't simply open."""
-        api_slots = self.diary_slots(diary_id)
-        if not api_slots or api_slots[-1]["Out"] is not None:
-            return None
-        slots, worked = [], 0
-        for i, s in enumerate(api_slots, 1):
-            in_sign = existing_sign(s["In"])
-            out_sign = existing_sign(s["Out"]) if s["Out"] else None
-            if out_sign:
-                worked += to_min(out_sign["time"]) - to_min(in_sign["time"])
-            else:
-                remaining = max(hours * 60 - worked, 30)
-                out_time = jitter(to_time(to_min(in_sign["time"]) + remaining), variance)
-                out_sign = new_sign(out_time, False)
-            slots.append(make_slot(in_sign, out_sign, i))
-        return slots
+        return plan_close_slots(self.diary_slots(diary_summary_id), hours, variance)
 
     # Live signing (today) ---------------------------------------------------
 
@@ -187,5 +232,5 @@ class Woffu:
         body = {"agreementEventId": None, "requestId": None,
                 "latitude": None, "longitude": None, "timezoneOffset": offset}
         resp = requests.post(f"{self.base}/api/svc/signs/v2/signs/signrequest",
-                             headers=self.headers, json=body)
+                             headers=self.headers, json=body, timeout=self.request_timeout)
         resp.raise_for_status()
